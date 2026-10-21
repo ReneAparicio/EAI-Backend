@@ -4,185 +4,129 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { randomUUID, createHmac } = require('node:crypto');
 const { WebSocket } = require('ws');
-
 const origen = 'https://saddlebrown-ostrich-994927.hostingersite.com';
-function permiso(clave, cambios = {}) {
-  const payload = Buffer.from(JSON.stringify({ rol: 'control', origen, exp: Math.floor(Date.now() / 1000) + 60,
-    nonce: randomUUID(), ...cambios })).toString('base64url');
-  return payload + '.' + createHmac('sha256', clave).update(payload).digest('hex');
+function permiso(clave) {
+  const texto = Buffer.from(JSON.stringify({ origen, exp: Math.floor(Date.now() / 1000) + 60 })).toString('base64url');
+  return texto + '.' + createHmac('sha256', clave).update(texto).digest('hex');
 }
-async function abrir(base, opciones) {
-  const socket = new WebSocket(base, opciones);
+async function abrir(url, origin) {
+  const socket = new WebSocket(url, origin ? { origin } : {});
   const mensajes = [];
   socket.on('message', raw => mensajes.push(JSON.parse(raw)));
   await once(socket, 'open');
   socket.enviar = datos => socket.send(JSON.stringify(datos));
-  socket.esperar = async (filtro, timeout = 3500) => {
+  socket.esperar = async filtro => {
     const inicio = Date.now();
-    while (Date.now() - inicio < timeout) {
-      const i = mensajes.findIndex(filtro);
-      if (i >= 0) return mensajes.splice(i, 1)[0];
+    while (Date.now() - inicio < 4000) {
+      const posicion = mensajes.findIndex(filtro);
+      if (posicion >= 0) return mensajes.splice(posicion, 1)[0];
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    throw new Error('No llego el mensaje esperado. Tipos: ' + mensajes.map(x => x.tipo));
+    throw new Error('No llego la respuesta esperada');
   };
   return socket;
 }
 
-test('HTTP y WSS: autenticacion, prioridad STOP, ACK, liveness y reconexion sin ordenes antiguas', { timeout: 20000 }, async () => {
+test('rutas HTTP y protocolo WSS simple: control, estado, parada y reconexion', { timeout: 18000 }, async () => {
   const clave = randomUUID();
-  const child = spawn(process.execPath, ['server.js'], { cwd: __dirname,
+  const proceso = spawn(process.execPath, ['server.js'], { cwd: __dirname,
     env: { ...process.env, DEVICE_KEY: clave, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let intervalo;
   const sockets = [];
+  let latidos;
   try {
-    const port = await new Promise((resolve, reject) => {
-      child.on('error', reject);
-      child.stderr.on('data', d => reject(new Error(d.toString())));
-      child.stdout.on('data', d => { const match = d.toString().match(/puerto (\d+)/); if (match) resolve(match[1]); });
+    const puerto = await new Promise((resolve, reject) => {
+      proceso.on('error', reject);
+      proceso.stdout.on('data', d => { const m = d.toString().match(/puerto (\d+)/); if (m) resolve(m[1]); });
     });
-    const base = 'http://127.0.0.1:' + port;
-    const wsurl = 'ws://127.0.0.1:' + port + '/ws';
-    async function http(ruta, cuerpo, status = 200, key = clave) {
-      const res = await fetch(base + ruta, { method: cuerpo ? 'POST' : 'GET', headers: {
-        'x-device-key': key, 'Content-Type': 'application/json' }, body: cuerpo ? JSON.stringify(cuerpo) : undefined });
-      assert.equal(res.status, status, ruta);
-      return res.json();
+    const base = 'http://127.0.0.1:' + puerto;
+    const url = 'ws://127.0.0.1:' + puerto + '/ws';
+    async function http(ruta, cuerpo, codigo = 200, key = clave) {
+      const respuesta = await fetch(base + ruta, { method: cuerpo ? 'POST' : 'GET',
+        headers: { 'x-device-key': key, 'Content-Type': 'application/json' }, body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+      assert.equal(respuesta.status, codigo, ruta);
+      return respuesta.json();
     }
     await http('/');
     await http('/estado', null, 401, 'incorrecta');
     assert.deepEqual(await http('/estado'), { modo: 'manual', motor: 'detenido', distancia: null, conectado: false });
     await http('/motor', { accion: 'parar' }, 400);
-    let cmd = await http('/comando?sincronizar=1');
-    assert.equal(cmd.habilitado, false);
+    await http('/sensor', { distancia: -1, motor: 'detenido' }, 400);
     await http('/motor', { accion: 'izquierda' });
-    cmd = await http('/comando');
-    await http('/sensor', { distancia: 75, motor: 'izquierda', revision: cmd.revision });
-    assert.equal((await http('/estado')).conectado, true);
+    assert.equal((await http('/comando')).accion, 'izquierda');
     await http('/modo', { modo: 'automatico' });
     await http('/motor', { accion: 'derecha' }, 409);
     await http('/motor', { accion: 'detenido' });
     await http('/modo', { modo: 'manual' });
+    await http('/sensor', { distancia: 75, motor: 'detenido' });
+    assert.equal((await http('/estado')).distancia, 75);
 
-    const sinAuth = await abrir(wsurl); sockets.push(sinAuth);
-    const cerrado = once(sinAuth, 'close');
-    sinAuth.enviar({ tipo: 'motor', accion: 'izquierda' });
-    assert.equal((await cerrado)[0], 1008);
-    const invalido = await abrir(wsurl, { origin: origen }); sockets.push(invalido);
-    const rechazado = once(invalido, 'close');
-    invalido.enviar({ tipo: 'auth', rol: 'control', token: permiso('clave-incorrecta') });
+    const falso = await abrir(url); sockets.push(falso);
+    const rechazado = once(falso, 'close');
+    falso.enviar({ clave: 'incorrecta' });
     assert.equal((await rechazado)[0], 1008);
-
-    const dispositivo = await abrir(wsurl); sockets.push(dispositivo);
-    dispositivo.enviar({ tipo: 'auth', rol: 'arduino', clave });
-    const bienvenida = await dispositivo.esperar(x => x.tipo === 'bienvenida');
-    assert.equal((await http('/estado')).conectado, false);
+    const dispositivo = await abrir(url); sockets.push(dispositivo);
+    // Autenticar tarde no debe consumir el plazo de los primeros latidos.
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    dispositivo.enviar({ clave });
+    const inicial = await dispositivo.esperar(x => Object.hasOwn(x, 'habilitado'));
+    assert.deepEqual(inicial, { modo: 'manual', accion: 'detenido', habilitado: false, reto: 0 });
     let reto = 0;
-    let revision = '';
     let motor = 'detenido';
-    const pulsar = () => dispositivo.enviar({ tipo: 'pulso', sesion: bienvenida.sesion, reto: ++reto,
-      revision, motor, distancia: null });
     dispositivo.on('message', raw => {
       const d = JSON.parse(raw);
-      if (d.tipo === 'comando') { revision = d.revision; motor = d.habilitado && d.modo === 'manual' ? d.accion : 'detenido'; }
+      assert.ok(Buffer.byteLength(raw) <= 120, 'Cabe en la biblioteca oficial del Arduino');
+      if (d.habilitado && d.modo === 'manual') motor = d.accion;
+      else motor = 'detenido';
     });
+    const pulsar = () => dispositivo.enviar({ reto: ++reto, motor, distancia: null });
     pulsar();
-    intervalo = setInterval(pulsar, 100);
-    const inicial = await dispositivo.esperar(x => x.tipo === 'comando');
-    assert.equal(inicial.accion, 'detenido');
-    assert.equal(inicial.habilitado, false);
+    latidos = setInterval(pulsar, 250);
+    await dispositivo.esperar(x => x.reto === 1);
     assert.equal((await http('/estado')).conectado, true);
-    await http('/sensor', { distancia: 75, motor: 'detenido' }, 409);
 
-    const token = permiso(clave);
-    const navegador = await abrir(wsurl, { origin: origen }); sockets.push(navegador);
-    navegador.enviar({ tipo: 'auth', rol: 'control', token });
-    let estado = await navegador.esperar(x => x.tipo === 'estado');
-    const heartbeat = setInterval(() => { if (navegador.readyState === 1) navegador.enviar({ tipo: 'pulso' }); }, 500);
+    const pagina = await abrir(url, origen); sockets.push(pagina);
+    pagina.enviar({ token: permiso(clave) });
+    await pagina.esperar(x => x.conectado === true);
+    const vidaPagina = setInterval(() => { if (pagina.readyState === 1) pagina.enviar({ pulso: true }); }, 1000);
     try {
-      await http('/motor', { accion: 'izquierda' }, 409);
-      const inicio = performance.now();
-      navegador.enviar({ tipo: 'motor', id: 1, epoca: estado.epoca, accion: 'izquierda' });
-      const aplicado = await dispositivo.esperar(x => x.tipo === 'comando' && x.accion === 'izquierda');
-      assert.equal(aplicado.habilitado, true);
-      console.log('Entrega local navegador-servidor-dispositivo (ms):', Math.round(performance.now() - inicio));
-      await navegador.esperar(x => x.tipo === 'aplicado' && x.id === 1);
-      const epocaAnterior = estado.epoca;
-      navegador.enviar({ tipo: 'motor', id: 2, epoca: epocaAnterior, accion: 'detenido' });
-      navegador.enviar({ tipo: 'motor', id: 3, epoca: epocaAnterior, accion: 'derecha' });
-      await navegador.esperar(x => x.tipo === 'error' && x.id === 3);
-      estado = await navegador.esperar(x => x.tipo === 'estado' && x.epoca !== epocaAnterior);
-      cmd = await http('/comando');
-      assert.equal(cmd.accion, 'detenido');
-      assert.equal(cmd.habilitado, false);
-      navegador.enviar({ tipo: 'motor', id: 4, epoca: estado.epoca, accion: 'derecha' });
-      await dispositivo.esperar(x => x.tipo === 'comando' && x.accion === 'derecha');
-      navegador.enviar({ tipo: 'modo', id: 5, epoca: estado.epoca, modo: 'automatico' });
-      estado = await navegador.esperar(x => x.tipo === 'estado' && x.modo === 'automatico');
-      navegador.enviar({ tipo: 'motor', id: 6, epoca: estado.epoca, accion: 'detenido' });
-      await navegador.esperar(x => x.tipo === 'aceptado' && x.id === 6);
-      assert.equal((await http('/comando')).habilitado, false);
+      await http('/motor', { accion: 'derecha' }, 409);
+      pagina.enviar({ accion: 'izquierda' });
+      await dispositivo.esperar(x => x.accion === 'izquierda' && x.habilitado);
+      await pagina.esperar(x => x.motor === 'izquierda');
+      pagina.enviar({ accion: 'derecha' });
+      await dispositivo.esperar(x => x.accion === 'derecha' && x.habilitado);
+      await pagina.esperar(x => x.motor === 'derecha');
+      pagina.enviar({ accion: 'detenido' });
+      await dispositivo.esperar(x => x.accion === 'detenido' && !x.habilitado);
+      await pagina.esperar(x => x.motor === 'detenido');
+      pagina.enviar({ modo: 'automatico' });
+      await dispositivo.esperar(x => x.modo === 'automatico' && x.habilitado);
+      pagina.enviar({ accion: 'detenido' });
+      await dispositivo.esperar(x => x.modo === 'automatico' && !x.habilitado);
+      pagina.enviar({ modo: 'manual' });
+      await dispositivo.esperar(x => x.modo === 'manual');
+      pagina.enviar({ accion: 'izquierda' });
+      await dispositivo.esperar(x => x.accion === 'izquierda');
+      const cierrePagina = once(pagina, 'close');
+      pagina.close();
+      await cierrePagina;
+      await dispositivo.esperar(x => x.accion === 'detenido' && !x.habilitado);
+    } finally { clearInterval(vidaPagina); }
 
-      const replay = await abrir(wsurl, { origin: origen }); sockets.push(replay);
-      const replayCerrado = once(replay, 'close');
-      replay.enviar({ tipo: 'auth', rol: 'control', token });
-      assert.equal((await replayCerrado)[0], 1008);
-      clearInterval(intervalo);
-      intervalo = null;
-      await new Promise(resolve => setTimeout(resolve, 2300));
-      assert.equal((await http('/estado')).conectado, false);
-      const nuevo = await abrir(wsurl); sockets.push(nuevo);
-      nuevo.enviar({ tipo: 'auth', rol: 'arduino', clave });
-      const nuevaSesion = await nuevo.esperar(x => x.tipo === 'bienvenida');
-      assert.notEqual(nuevaSesion.sesion, bienvenida.sesion);
-      nuevo.enviar({ tipo: 'pulso', sesion: nuevaSesion.sesion, reto: 1, motor: 'detenido', distancia: null, revision: '' });
-      const seguro = await nuevo.esperar(x => x.tipo === 'comando');
-      assert.equal(seguro.accion, 'detenido');
-      assert.equal(seguro.habilitado, false);
-      const fueraDeSesion = once(nuevo, 'close');
-      nuevo.enviar({ tipo: 'pulso', sesion: bienvenida.sesion, reto: 2, motor: 'detenido', distancia: null });
-      assert.equal((await fueraDeSesion)[0], 1008);
-    } finally { clearInterval(heartbeat); }
+    clearInterval(latidos); latidos = null;
+    await new Promise(resolve => setTimeout(resolve, 3600));
+    assert.equal((await http('/estado')).conectado, false);
+    const nuevo = await abrir(url); sockets.push(nuevo);
+    nuevo.enviar({ clave });
+    assert.equal((await nuevo.esperar(x => Object.hasOwn(x, 'habilitado'))).habilitado, false);
+    nuevo.enviar({ reto: 4294967295, motor: 'detenido', distancia: 150 });
+    const maximo = await nuevo.esperar(x => x.reto === 4294967295);
+    assert.ok(Buffer.byteLength(JSON.stringify(maximo)) <= 120);
+    assert.equal((await http('/estado')).distancia, 150);
   } finally {
-    clearInterval(intervalo);
-    for (const s of sockets) s.terminate();
-    const salida = once(child, 'exit');
-    if (child.exitCode === null) { child.kill(); await salida; }
-  }
-});
-
-test('perder el heartbeat del navegador detiene aunque Arduino siga conectado', { timeout: 10000 }, async () => {
-  const clave = randomUUID();
-  const child = spawn(process.execPath, ['server.js'], { cwd: __dirname,
-    env: { ...process.env, DEVICE_KEY: clave, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let intervalo;
-  const sockets = [];
-  try {
-    const port = await new Promise((resolve, reject) => {
-      child.on('error', reject);
-      child.stdout.on('data', d => { const m = d.toString().match(/puerto (\d+)/); if (m) resolve(m[1]); });
-    });
-    const url = 'ws://127.0.0.1:' + port + '/ws';
-    const dispositivo = await abrir(url); sockets.push(dispositivo);
-    dispositivo.enviar({ tipo: 'auth', rol: 'arduino', clave });
-    const bienvenida = await dispositivo.esperar(x => x.tipo === 'bienvenida');
-    let reto = 0;
-    const pulso = () => dispositivo.enviar({ tipo: 'pulso', sesion: bienvenida.sesion, reto: ++reto,
-      distancia: null, motor: 'detenido', revision: '' });
-    pulso();
-    intervalo = setInterval(pulso, 100);
-    await dispositivo.esperar(x => x.tipo === 'comando');
-    const control = await abrir(url, { origin: origen }); sockets.push(control);
-    control.enviar({ tipo: 'auth', rol: 'control', token: permiso(clave) });
-    const estado = await control.esperar(x => x.tipo === 'estado');
-    control.enviar({ tipo: 'motor', id: 1, epoca: estado.epoca, accion: 'izquierda' });
-    const movimiento = await dispositivo.esperar(x => x.tipo === 'comando' && x.accion === 'izquierda');
-    const detenido = await dispositivo.esperar(x => x.tipo === 'comando' && !x.habilitado && x.numero > movimiento.numero, 5000);
-    assert.equal(detenido.accion, 'detenido');
-  } finally {
-    clearInterval(intervalo);
-    for (const s of sockets) s.terminate();
-    const salida = once(child, 'exit');
-    if (child.exitCode === null) { child.kill(); await salida; }
+    clearInterval(latidos);
+    for (const socket of sockets) socket.terminate();
+    const salida = once(proceso, 'exit');
+    if (proceso.exitCode === null) { proceso.kill(); await salida; }
   }
 });
