@@ -1,69 +1,61 @@
-# API del motor: version simplificada
+# API REST del motor
 
-Node.js 24, Express y ws. Una sola instancia: las variables viven en memoria.
-Cada reinicio y reconexion del Arduino empieza con el movimiento deshabilitado.
+Node.js 24 y Express. Las variables del motor, modo y distancia viven en memoria;
+un reinicio del servidor empieza en manual y detenido. Usar una sola instancia.
 
-## Ejecutar
+## Ejecutar y publicar manualmente
 
 Desde Backend: npm ci, configurar DEVICE_KEY y ejecutar npm start.
 Pruebas: npm test. Render: build npm ci, start npm start, health /.
-Si se publica todo el proyecto, Root Directory es Backend.
-Render proporciona PORT y termina TLS. No hay otro puerto ni otro servicio.
-ALLOWED_ORIGINS admite los origenes HTTPS de Hostinger separados por comas;
-si no se configura se conservan los dos dominios existentes del proyecto.
+Root Directory: Backend si el repositorio contiene todo el proyecto.
+Render proporciona PORT y HTTPS. No se necesitan ALLOWED_ORIGINS ni servicios extra:
+la pagina llama al proxy PHP del mismo sitio y el Arduino accede por HTTPS.
 
-## Comunicacion
+## Rutas y datos
 
-Navegador y Arduino mantienen conexiones WSS a /ws. No se abre TLS por clic.
-Una pagina y un Arduino a la vez. PHP entrega un permiso HMAC valido 60 segundos,
-ligado al origen de la pagina; la clave permanente no llega al JavaScript.
-La misma DEVICE_KEY debe estar en Render, PHP privado y arduino_secrets.h.
+GET / es publico. Las cinco rutas siguientes requieren x-device-key.
+La clave debe coincidir en Render, PHP privado y arduino_secrets.h.
 
-Primer mensaje Arduino: {"clave":"CLAVE_PRIVADA"}.
-Pulso Arduino cada 500 ms: {"reto":1,"motor":"detenido","distancia":null}.
-El reto es un contador creciente por conexion. La distancia es centimetros o null.
-Respuesta y orden inmediata: {"modo":"manual","accion":"detenido","habilitado":false,"reto":1}.
+- GET /estado devuelve {"modo":"manual","motor":"detenido","distancia":null,"conectado":false}.
+- POST /motor recibe {"accion":"izquierda"}, {"accion":"derecha"} o {"accion":"detenido"}.
+  Selecciona control manual y guarda la orden aunque el Arduino este desconectado.
+  Devuelve el estado y accion. El motor informado solo cambia con una lectura del Arduino.
+- POST /modo recibe {"modo":"manual"} o {"modo":"automatico"}.
+  Guarda el modo y deja accion en detenido. Devuelve el estado.
+- GET /comando devuelve {"modo":"manual","accion":"detenido"}.
+- POST /sensor recibe {"motor":"detenido","distancia":null} y devuelve el estado.
+  distancia es un numero no negativo en centimetros o null si no hay lectura.
 
-Primer mensaje navegador: {"token":"PERMISO_PHP"}.
-Orden: {"accion":"izquierda"}, {"accion":"derecha"} o {"accion":"detenido"}.
-Modo: {"modo":"manual"} o {"modo":"automatico"}.
-Pulso navegador cada segundo: {"pulso":true}.
-Estado recibido: {"modo":"manual","motor":"detenido","distancia":null,"conectado":true}.
-El motor mostrado es el informado por el Arduino, no una confirmacion mecanica.
+conectado indica que /sensor recibio una lectura en los ultimos 10 segundos;
+no comprueba un cable ni garantiza que la orden ya se haya ejecutado.
+La orden permanece guardada hasta otro clic, un cambio de modo o un reinicio.
+No hay caducidad ni descarte de ordenes por desconexion.
 
-## Parada y automatico
+## Arduino y pagina
 
-Un temporizador independiente del RA4M1 corta PWM_M1 como maximo aproximadamente
-2 segundos desde el envio del pulso que autoriza el movimiento. Una respuesta
-atrasada no reinicia ese plazo. Este corte sigue funcionando aunque una llamada
-WiFi bloquee el programa, mientras el micro y sus interrupciones funcionen.
-El contador permite descartar respuestas antiguas sin UUID, revisiones ni ACK.
-Todos los mensajes destinados al Arduino son pequenos (menos de 126 bytes).
-El adaptador TLS agrupa escrituras y entrega frames completos a ArduinoHttpClient.
+La web envia ordenes inmediatamente con fetch a api.php y consulta estado cada
+segundo. Ningun boton se deshabilita. PHP agrega x-device-key sin exponerla al
+navegador. No se cambian estilos ni elementos visuales.
 
-Render cierra al Arduino tras 3 segundos sin pulso y a la pagina tras 5 segundos.
-Cerrar u ocultar la pagina solicita detener. Toda reconexion descarta movimientos;
-se necesita otro clic. Detener funciona tambien en automatico. Para volver a
-activar automatico despues de Detener, pasar a manual y regresar a automatico.
+Arduino consulta GET /comando, aplica la orden y espera 500 ms entre ciclos.
+Envia motor y distancia a POST /sensor cada 2 segundos. ArduinoHttpClient con
+WiFiSSLClient solicita mantener la conexion HTTPS para reutilizar TLS cuando
+Render lo permita. Un fallo cierra ese cliente; la siguiente consulta reconecta.
 
-El Arduino calcula el automatico: 50-90 cm izquierda, 100-150 derecha, otros o
-lectura invalida detenido. Limites inclusivos. USAR_SENSOR esta desactivado hasta
-conectar el HC-SR04 en TRIG=A0 y ECHO=A1 y habilitar esa constante.
+El automatico se calcula en el Arduino: 50-90 cm izquierda, 100-150 derecha y
+fuera de esos intervalos, incluido sensor sin eco, detenido. Limites inclusivos.
+HC-SR04: TRIG=A0 y ECHO=A1. M1: DATA=8, CLOCK=4, LATCH=12, ENABLE=7, PWM_M1=11.
+Las credenciales existentes no se modifican.
 
-## HTTP conservado
+El Arduino detiene el motor al detectar WiFi perdido o un fallo HTTPS/JSON.
+Las operaciones de red son bloqueantes: durante una llamada no procesa otra
+orden ni comprueba WiFi. Los timeouts de conexion y respuesta no son una parada
+independiente ni garantizan un limite total de latencia. Al recuperar la red,
+se ejecuta la orden que siga guardada. Esta version no impide reanudarla.
 
-GET / es publico. Las otras rutas requieren x-device-key:
-GET /estado devuelve el estado; POST /motor recibe accion;
-POST /modo recibe modo; GET /comando devuelve modo, accion, habilitado y reto=0;
-GET /comando?sincronizar=1 deshabilita movimiento; POST /sensor recibe motor y distancia.
-No se conserva el protocolo antiguo de revisiones: actualizar el sketch y la web
-junto con este servidor. El transporte principal del Arduino es ahora WSS.
-Mientras una pagina controla por WSS, HTTP rechaza movimientos y cambios de modo
-con 409. Detener siempre se admite. /sensor devuelve 409 si el Arduino usa WSS.
+## Pruebas
 
-## Verificacion
-
-npm test prueba HTTP y clientes WSS reales simulados: autenticacion, control,
-estado, parada, expiracion, reconexion y tamano de mensajes para el Arduino.
-No se probo el motor fisico ni se garantiza una latencia concreta por internet.
-Nada se publica automaticamente. Ver Frontend/INTEGRACION-ARDUINO.md.
+npm test prueba las cinco rutas, autenticacion, ordenes sin Arduino y telemetria.
+node --test ../Frontend/http.test.cjs comprueba botones y carga privada de clave.
+No se ha probado el motor fisico ni la latencia de Hostinger-Render-Arduino.
+Ver Frontend/INTEGRACION-ARDUINO.md para actualizar las tres partes juntas.
