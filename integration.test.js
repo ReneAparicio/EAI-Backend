@@ -33,11 +33,15 @@ test('API HTTP: clave, ordenes sin Arduino, modos y lecturas reales', { timeout:
     assert.deepEqual(await pedir('/estado'), {
       modo: 'manual', motor: 'detenido', distancia: null, conectado: false
     });
-    for (const accion of ['derecha', 'izquierda', 'detenido']) {
+    for (const accion of ['adelante', 'atras', 'izquierda', 'derecha', 'detenido']) {
       const estado = await pedir('/motor', { accion });
       assert.equal(estado.conectado, false);
       assert.equal(estado.motor, 'detenido', 'La orden no inventa el estado fisico');
       assert.deepEqual(await pedir('/comando'), { modo: 'manual', accion });
+    }
+    for (const motor of ['adelante', 'atras', 'izquierda', 'derecha', 'detenido']) {
+      await pedir('/sensor', { motor, distancia: 120 });
+      assert.equal((await pedir('/estado')).motor, motor);
     }
     await pedir('/motor', { accion: 'parar' }, 400);
     await pedir('/modo', { modo: 'automatico' });

@@ -9,7 +9,7 @@ let accion = 'detenido';
 let motor = 'detenido';
 let distancia = null;
 let ultimaLectura = 0;
-const acciones = ['izquierda', 'derecha', 'detenido'];
+const acciones = ['adelante', 'atras', 'izquierda', 'derecha', 'detenido'];
 
 function estado() {
   return { modo, motor, distancia, conectado: ultimaLectura > 0 && Date.now() - ultimaLectura < 10000 };

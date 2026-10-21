@@ -1,4 +1,4 @@
-# API REST del motor
+# API REST del carrito de dos motores
 
 Node.js 24 y Express. Las variables del motor, modo y distancia viven en memoria;
 un reinicio del servidor empieza en manual y detenido. Usar una sola instancia.
@@ -17,7 +17,8 @@ GET / es publico. Las cinco rutas siguientes requieren x-device-key.
 La clave debe coincidir en Render, PHP privado y arduino_secrets.h.
 
 - GET /estado devuelve {"modo":"manual","motor":"detenido","distancia":null,"conectado":false}.
-- POST /motor recibe {"accion":"izquierda"}, {"accion":"derecha"} o {"accion":"detenido"}.
+- POST /motor recibe accion: adelante, atras, izquierda, derecha o detenido.
+  Ejemplo: {"accion":"adelante"}. DETENER sigue enviando detenido.
   Selecciona control manual y guarda la orden aunque el Arduino este desconectado.
   Devuelve el estado y accion. El motor informado solo cambia con una lectura del Arduino.
 - POST /modo recibe {"modo":"manual"} o {"modo":"automatico"}.
@@ -44,7 +45,14 @@ Render lo permita. Un fallo cierra ese cliente; la siguiente consulta reconecta.
 
 El automatico se calcula en el Arduino: 50-90 cm izquierda, 100-150 derecha y
 fuera de esos intervalos, incluido sensor sin eco, detenido. Limites inclusivos.
-HC-SR04: TRIG=A0 y ECHO=A1. M1: DATA=8, CLOCK=4, LATCH=12, ENABLE=7, PWM_M1=11.
+HC-SR04: TRIG=A0 y ECHO=A1. Shield: DATA=8, CLOCK=4, LATCH=12, ENABLE=7.
+M1 conserva PWM_M1=11; M2 agrega PWM_M2=3. M1 es la rueda derecha y M2 la izquierda.
+Adelante activa M1 bit 2 y M2 bit 1; atras, M1 bit 3 y M2 bit 4.
+Izquierda activa M1 bit 2 y M2 bit 4; derecha, M1 bit 3 y M2 bit 1.
+Los giros son sobre el eje, con las ruedas en sentidos opuestos.
+Detener y los fallos de comunicacion desactivan ambos motores.
+Comprobar la polaridad con las ruedas levantadas: adelante debe mover ambas
+ruedas hacia delante. Si una gira al reves, invertir sus cables con la alimentacion apagada.
 Las credenciales existentes no se modifican.
 
 El Arduino detiene el motor al detectar WiFi perdido o un fallo HTTPS/JSON.
@@ -55,7 +63,7 @@ se ejecuta la orden que siga guardada. Esta version no impide reanudarla.
 
 ## Pruebas
 
-npm test prueba las cinco rutas, autenticacion, ordenes sin Arduino y telemetria.
+npm test prueba las cinco rutas, autenticacion, las cinco ordenes sin Arduino y telemetria.
 node --test ../Frontend/http.test.cjs comprueba botones y carga privada de clave.
 No se ha probado el motor fisico ni la latencia de Hostinger-Render-Arduino.
 Ver Frontend/INTEGRACION-ARDUINO.md para actualizar las tres partes juntas.
