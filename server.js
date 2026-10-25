@@ -27,6 +27,7 @@ app.use(express.json({ limit: '2kb' }));
 app.get('/', (req, res) => res.json({ mensaje: 'API Arduino funcionando.' }));
 app.get('/estado', (req, res) => res.json(estado()));
 app.post('/motor', (req, res) => {
+  console.log(`POST /motor | Acción: ${req.body?.accion}`);
   if (!req.body || !acciones.includes(req.body.accion)) return res.status(400).json({ error: 'Acción inválida.' });
   modo = 'manual';
   accion = req.body.accion;
@@ -38,8 +39,12 @@ app.post('/modo', (req, res) => {
   accion = 'detenido';
   res.json(estado());
 });
-app.get('/comando', (req, res) => res.json({ modo, accion }));
+app.get('/comando', (req, res) => {
+  console.log('GET /comando');
+  res.json({ modo, accion });
+});
 app.post('/sensor', (req, res) => {
+  console.log(`POST /sensor | Distancia: ${req.body?.distancia} cm | Motor: ${req.body?.motor}`);
   const datos = req.body;
   if (!datos || !acciones.includes(datos.motor) || !(datos.distancia === null ||
       (typeof datos.distancia === 'number' && Number.isFinite(datos.distancia) && datos.distancia >= 0))) {
