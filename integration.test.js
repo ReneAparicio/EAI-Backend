@@ -26,39 +26,63 @@ test('API HTTP: clave, ordenes sin Arduino, modos y lecturas reales', { timeout:
         body: cuerpo ? JSON.stringify(cuerpo) : undefined
       });
       assert.equal(respuesta.status, codigo, ruta);
-      return respuesta.json();
+      const datos = await respuesta.json();
+      if (ruta === '/comando' && codigo === 200) {
+        assert.match(datos.revision, /^[0-9a-f-]{36}$/);
+        delete datos.revision;
+      }
+      return datos;
     }
     await pedir('/', null, 200, '');
     await pedir('/estado', null, 401, 'incorrecta');
+    for (const ruta of ['/comando', '/motor', '/modo', '/sensor']) {
+      await pedir(ruta, ruta === '/comando' ? null : {}, 401, 'incorrecta');
+    }
+    const revision = async () => (await (await fetch('http://127.0.0.1:' + puerto + '/comando', {
+      headers: { 'x-device-key': clave }
+    })).json()).revision;
+    const inicial = await revision();
+    assert.equal(await revision(), inicial, 'Consultar no renueva la orden');
+    await pedir('/motor', { accion: 'detenido' });
+    const segunda = await revision();
+    assert.notEqual(segunda, inicial);
+    await pedir('/modo', { modo: 'manual' });
+    assert.notEqual(await revision(), segunda);
     assert.deepEqual(await pedir('/estado'), {
       modo: 'manual', motor: 'detenido', distancia: null, conectado: false
     });
-    for (const accion of ['adelante', 'atras', 'izquierda', 'derecha', 'detenido']) {
+    for (const accion of ['derecha', 'izquierda', 'detenido']) {
       const estado = await pedir('/motor', { accion });
       assert.equal(estado.conectado, false);
       assert.equal(estado.motor, 'detenido', 'La orden no inventa el estado fisico');
       assert.deepEqual(await pedir('/comando'), { modo: 'manual', accion });
     }
-    for (const motor of ['adelante', 'atras', 'izquierda', 'derecha', 'detenido']) {
+    for (const motor of ['derecha', 'izquierda', 'detenido']) {
       await pedir('/sensor', { motor, distancia: 120 });
       assert.equal((await pedir('/estado')).motor, motor);
     }
     await pedir('/motor', { accion: 'parar' }, 400);
+    for (const accion of ['adelante', 'atras', 'otro', '', null]) {
+      const anterior = await revision();
+      await pedir('/motor', { accion }, 400);
+      await pedir('/sensor', { motor: accion, distancia: 75 }, 400);
+      assert.equal(await revision(), anterior, 'Una accion invalida no desbloquea el motor');
+    }
     await pedir('/modo', { modo: 'automatico' });
     assert.deepEqual(await pedir('/comando'), { modo: 'automatico', accion: 'detenido' });
-    await pedir('/motor', { accion: 'derecha' });
-    assert.deepEqual(await pedir('/comando'), { modo: 'manual', accion: 'derecha' });
+    await pedir('/motor', { accion: 'izquierda' });
+    assert.deepEqual(await pedir('/comando'), { modo: 'manual', accion: 'izquierda' });
     await pedir('/modo', { modo: 'otro' }, 400);
     await pedir('/modo', { modo: 'automatico' });
-    const estado = await pedir('/sensor', { motor: 'izquierda', distancia: 75 });
-    assert.deepEqual(estado, { modo: 'automatico', motor: 'izquierda', distancia: 75, conectado: true });
+    const estado = await pedir('/sensor', { motor: 'derecha', distancia: 75 });
+    assert.deepEqual(estado, { modo: 'automatico', motor: 'derecha', distancia: 75, conectado: true });
     assert.deepEqual(await pedir('/estado'), estado);
     assert.deepEqual(await pedir('/comando'), { modo: 'automatico', accion: 'detenido' });
     await pedir('/sensor', { motor: 'detenido', distancia: null });
     assert.equal((await pedir('/estado')).distancia, null);
-    await pedir('/sensor', { motor: 'derecha', distancia: -1 }, 400);
+    await pedir('/sensor', { motor: 'izquierda', distancia: -1 }, 400);
     await pedir('/sensor', { motor: 'otro', distancia: 100 }, 400);
-    await pedir('/sensor', { motor: 'derecha', distancia: '100' }, 400);
+    await pedir('/sensor', { motor: 'izquierda', distancia: '100' }, 400);
     await pedir('/no-existe', null, 404);
     const invalido = await fetch('http://127.0.0.1:' + puerto + '/motor', {
       method: 'POST', headers: { 'x-device-key': clave, 'Content-Type': 'application/json' }, body: '{'

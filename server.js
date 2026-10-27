@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('node:crypto');
 
 const app = express();
 const clave = process.env.DEVICE_KEY;
@@ -9,7 +10,8 @@ let accion = 'detenido';
 let motor = 'detenido';
 let distancia = null;
 let ultimaLectura = 0;
-const acciones = ['adelante', 'atras', 'detenido'];
+const acciones = ['derecha', 'izquierda', 'detenido'];
+let revision = randomUUID();
 
 function estado() {
   return { modo, motor, distancia, conectado: ultimaLectura > 0 && Date.now() - ultimaLectura < 10000 };
@@ -31,17 +33,19 @@ app.post('/motor', (req, res) => {
   if (!req.body || !acciones.includes(req.body.accion)) return res.status(400).json({ error: 'Acción inválida.' });
   modo = 'manual';
   accion = req.body.accion;
+  revision = randomUUID();
   res.json({ ...estado(), accion });
 });
 app.post('/modo', (req, res) => {
   if (!req.body || !['manual', 'automatico'].includes(req.body.modo)) return res.status(400).json({ error: 'Modo inválido.' });
   modo = req.body.modo;
   accion = 'detenido';
+  revision = randomUUID();
   res.json(estado());
 });
 app.get('/comando', (req, res) => {
   console.log('GET /comando');
-  res.json({ modo, accion });
+  res.json({ modo, accion, revision });
 });
 app.post('/sensor', (req, res) => {
   console.log(`POST /sensor | Distancia: ${req.body?.distancia} cm | Motor: ${req.body?.motor}`);
