@@ -20,8 +20,9 @@ function estado() {
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');
-  if (req.method === 'GET' && req.path === '/') return next();
-  if (req.get('x-device-key') !== clave) return res.status(401).json({ error: 'Clave inválida.' });
+  const arduinoRoute = (req.method === 'GET' && req.path === '/comando') ||
+    (req.method === 'POST' && req.path === '/sensor');
+  if (arduinoRoute && req.get('x-device-key') !== clave) return res.status(401).json({ error: 'Clave inválida.' });
   next();
 });
 app.use(express.json({ limit: '2kb' }));
